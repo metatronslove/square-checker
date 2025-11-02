@@ -1,0 +1,55 @@
+# 🚀 GPU Optimizasyonlu Sihirli Kare Çözücü - Gereksinimler
+
+# TEMEL BİLİMSEL HESAPLAMA
+numpy>=1.21.0
+scipy>=1.7.0
+
+# GPU HESAPLAMA (ZORUNLU - Yüksek Performans İçin)
+cupy-cuda11x>=9.0.0; sys_platform == 'linux' and platform_machine == 'x86_64'
+cupy-cuda12x>=9.0.0; sys_platform == 'linux' and platform_machine == 'x86_64' and cuda_version >= '12.0'
+cupy-rocm-5-3>=9.0.0; sys_platform == 'linux' and platform_machine != 'x86_64'  # AMD GPU'lar için
+cupy-core>=9.0.0; sys_platform != 'linux'
+
+# İLERLEME TAKİBİ
+tqdm>=4.62.0
+colorama>=0.4.4
+
+# VERİ İŞLEME
+pandas>=1.3.0
+
+# GÖRSELLEŞTİRME (Opsiyonel)
+matplotlib>=3.4.0
+
+# GELİŞTİRME ARAÇLARI
+pytest>=6.2.0
+black>=21.0.0
+flake8>=3.9.0
+
+# SİSTEM İZLEME
+psutil>=5.8.0
+
+# GPU BELLEK YÖNETİMİ
+GPUtil>=1.4.0
+
+# PERFORMANS İZLEME
+pycuda>=2021.1; sys_platform == 'linux'
+pyopencl>=2021.2.11; sys_platform == 'linux'
+
+# PARALEL İŞLEME
+joblib>=1.0.0
+dask>=2021.10.0
+
+# LOGLAMA
+loguru>=0.5.0
+
+# TERMİNAL ARAYÜZÜ
+rich>=10.0.0
+
+# TİP KONTROLÜ
+typing-extensions>=4.0.0
+
+# TARİH/ZAMAN İŞLEMLERİ
+python-dateutil>=2.8.0
+
+# PLATFORM BAĞIMSIZ YOL İŞLEMLERİ
+pathlib2>=2.3.0; python_version < '3.4'
