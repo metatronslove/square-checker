@@ -2,6 +2,8 @@
 
 Bu proje, **MagicSquareGenerator** ile otomatik sihirli kare haritaları üretip, bu haritaları kullanarak listedeki ifadelerin ebced değerlerini yerleştirip sihirli kare olup olmadığını test eden yüksek performanslı bir Python uygulamasıdır.
 
+https://github.com/metatronslove/square-checker/blob/5755e63dfcf47bf3c409a6e37b6e105af8e1779d/docs/Ekran_G%C3%B6r%C3%BCnt%C3%BCs%C3%BC_20251104_050723.png
+
 ## 🚀 Özellikler
 
 - **MagicSquareGenerator Entegrasyonu**: Otomatik sihirli kare haritası üretimi
