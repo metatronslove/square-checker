@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sihirli Kare Çözücü - GPU Optimizasyonlu
+SİHİRLİ KARE ÇÖZÜCÜ - DÜZELTİLMİŞ TAM VERSİYON
 """
 
 import numpy as np
@@ -39,42 +39,40 @@ except ImportError as e:
     MAGIC_SQUARE_AVAILABLE = False
     print(f"⚠️ MagicSquare.py yüklenemedi: {e}")
 
-# GPU kütüphanelerini kontrol et - BASİT VE ETKİLİ YÖNTEM
+# =============================================================================
+# BASİT GPU KONTROLÜ
+# =============================================================================
+
 GPU_AVAILABLE = False
 cp = None
 GPU_DEVICES = []
-# CuPy'nin yüklendiğini gösteren bayrak (import hatası değilse True kalmalı)
-CUPY_IMPORTED = False
 
 try:
     import cupy as cp
-    CUPY_IMPORTED = True
     print("✅ CuPy başarıyla import edildi")
 
-    # CUDA'nın çalışıp çalışmadığını basitçe test et
     try:
-        # Basit bir GPU işlemi deneyelim
+        # Basit GPU testi
         test_array = cp.array([1, 2, 3])
         result = test_array * 2
-        cp.cuda.Stream.null.synchronize()  # Senkronize et
+        cp.cuda.Stream.null.synchronize()
 
         device_count = cp.cuda.runtime.getDeviceCount()
         print(f"✅ {device_count} adet CUDA cihazı tespit edildi")
 
         for i in range(device_count):
             try:
-                device_name = cp.cuda.runtime.getDeviceProperties(i)['name'].decode('utf-8')
-                total_memory = cp.cuda.runtime.getDeviceProperties(i)['totalGlobalMem'] / (1024**3)
+                props = cp.cuda.runtime.getDeviceProperties(i)
+                device_name = props['name'].decode('utf-8')
+                total_memory = props['totalGlobalMem'] / (1024**3)
                 print(f"   📍 GPU {i}: {device_name} - {total_memory:.1f} GB")
                 GPU_DEVICES.append(i)
             except Exception as e:
-                # Cihaz bilgisi alınamasa bile cihazın varlığını reddetmeyelim
-                print(f"   ⚠️ GPU {i} bilgisi alınamadı (Ancak cihaz var): {e}")
-                GPU_DEVICES.append(i) # Hata raporlamasını önlemek için yine de ekleyelim
+                print(f"   ⚠️ GPU {i} bilgisi alınamadı: {e}")
+                GPU_DEVICES.append(i)
 
         if GPU_DEVICES:
             GPU_AVAILABLE = True
-            # Varsayılan cihazı ayarla
             cp.cuda.Device(GPU_DEVICES[0]).use()
             print(f"🚀 GPU modu AKTİF - {len(GPU_DEVICES)} GPU kullanılıyor")
         else:
@@ -83,7 +81,6 @@ try:
             GPU_AVAILABLE = False
 
     except Exception as e:
-        # CUDA testi başarısız olursa, GPU_AVAILABLE False olur
         print(f"❌ CUDA testi başarısız: {e}")
         cp = None
         GPU_AVAILABLE = False
@@ -93,9 +90,9 @@ except ImportError as e:
     cp = None
     GPU_AVAILABLE = False
 
-# CuPy yoksa numpy kullan
-if cp is None:
-    import numpy as cp
+if not GPU_AVAILABLE:
+    import numpy
+    cp = numpy
     print("⚠️ CuPy kullanılamıyor, NumPy ile CPU modunda çalışılıyor")
 
 # =============================================================================
@@ -170,166 +167,128 @@ SUPPORTED_LANGUAGES = {
 }
 
 # =============================================================================
-# GPU OPTİMİZASYON SINIFLARI
+# GPU VALIDATOR
 # =============================================================================
 
 class GPUMagicSquareValidator:
-    """GPU üzerinde sihirli kare doğrulama"""
-
     def __init__(self, square_size: int, batch_size: int = 10000):
         self.square_size = square_size
         self.batch_size = batch_size
         self.n = square_size
-
-        # Global durumu direkt al
-        global GPU_AVAILABLE
         self.gpu_available = GPU_AVAILABLE
-
-        print(f"🔧 GPU Validator başlatılıyor - GPU Durumu: {self.gpu_available}")
 
         if self.gpu_available:
             try:
                 self._compile_gpu_kernels()
-                print("✅ GPU kernel'ları başarıyla derlendi")
             except Exception as e:
-                # Kernel derleme hatası durumunda yerel GPU kullanımını kapat
                 print(f"❌ GPU kernel derleme hatası: {e}. CPU moduna geçiliyor.")
                 self.gpu_available = False
-        else:
-            print("ℹ️ GPU kullanılamıyor, CPU modunda çalışılıyor")
 
     def _compile_gpu_kernels(self):
-        """GPU kernel'larını derle"""
-        # Global cp (cupy) kullanılıyor
         global cp
-        if not self.gpu_available or cp is None or not hasattr(cp, 'RawKernel'):
-            raise RuntimeError("CuPy veya RawKernel kullanılamıyor.")
+        if not self.gpu_available:
+            return
 
-        # ... (Kernel kodu aynı kalacak)
+        self.validate_magic_squares_kernel = cp.RawKernel(r'''
+        extern "C" __global__
+        void validate_magic_squares(
+            const long long* combinations,
+            const int n,
+            const int batch_size,
+            const int combo_length,
+            bool* results,
+            long long* magic_constants
+        ) {
+            int idx = blockIdx.x * blockDim.x + threadIdx.x;
+            if (idx >= batch_size) return;
 
-        try:
-            self.validate_magic_squares_kernel = cp.RawKernel(r'''
-            extern "C" __global__
-            void validate_magic_squares(
-                const long long* combinations,
-                const int n,
-                const int batch_size,
-                const int combo_length,
-                bool* results,
-                long long* magic_constants
-            ) {
-                int idx = blockIdx.x * blockDim.x + threadIdx.x;
-                if (idx >= batch_size) return;
+            const long long* combo = &combinations[idx * combo_length];
 
-                const long long* combo = &combinations[idx * combo_length];
-
-                long long row_sums[12];
-                for (int i = 0; i < n; i++) {
-                    row_sums[i] = 0;
-                    for (int j = 0; j < n; j++) {
-                        row_sums[i] += combo[i * n + j];
-                    }
-                }
-
-                long long col_sums[12];
+            long long row_sums[12];
+            for (int i = 0; i < n; i++) {
+                row_sums[i] = 0;
                 for (int j = 0; j < n; j++) {
-                    col_sums[j] = 0;
-                    for (int i = 0; i < n; i++) {
-                        col_sums[j] += combo[i * n + j];
-                    }
+                    row_sums[i] += combo[i * n + j];
                 }
+            }
 
-                long long diag1 = 0, diag2 = 0;
+            long long col_sums[12];
+            for (int j = 0; j < n; j++) {
+                col_sums[j] = 0;
                 for (int i = 0; i < n; i++) {
-                    diag1 += combo[i * n + i];
-                    diag2 += combo[i * n + (n - 1 - i)];
+                    col_sums[j] += combo[i * n + j];
                 }
+            }
 
-                bool is_magic = true;
-                long long target = row_sums[0];
+            long long diag1 = 0, diag2 = 0;
+            for (int i = 0; i < n; i++) {
+                diag1 += combo[i * n + i];
+                diag2 += combo[i * n + (n - 1 - i)];
+            }
 
-                for (int i = 1; i < n; i++) {
-                    if (row_sums[i] != target) {
+            bool is_magic = true;
+            long long target = row_sums[0];
+
+            for (int i = 1; i < n; i++) {
+                if (row_sums[i] != target) {
+                    is_magic = false;
+                    break;
+                }
+            }
+
+            if (is_magic) {
+                for (int j = 0; j < n; j++) {
+                    if (col_sums[j] != target) {
                         is_magic = false;
                         break;
                     }
                 }
-
-                if (is_magic) {
-                    for (int j = 0; j < n; j++) {
-                        if (col_sums[j] != target) {
-                            is_magic = false;
-                            break;
-                        }
-                    }
-                }
-
-                if (is_magic && (diag1 != target || diag2 != target)) {
-                    is_magic = false;
-                }
-
-                results[idx] = is_magic;
-                if (is_magic) {
-                    magic_constants[idx] = target;
-                } else {
-                    magic_constants[idx] = -1;
-                }
             }
-            ''', 'validate_magic_squares')
 
-        except Exception as e:
-            print(f"❌ Kernel derleme hatası: {e}")
-            raise
+            if (is_magic && (diag1 != target || diag2 != target)) {
+                is_magic = false;
+            }
+
+            results[idx] = is_magic;
+            magic_constants[idx] = is_magic ? target : -1;
+        }
+        ''', 'validate_magic_squares')
 
     def validate_batch_gpu(self, combinations: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """GPU'da batch halinde sihirli kare doğrulama"""
-        global cp
-
         batch_size = combinations.shape[0]
         n_squared = self.n * self.n
 
         if self.gpu_available:
             try:
-                print(f"🔄 GPU işlemi başlatılıyor - Batch: {batch_size}")
-
-                # Veriyi GPU'ya kopyala
                 combinations_gpu = cp.asarray(combinations, dtype=cp.int64)
                 results_gpu = cp.zeros(batch_size, dtype=cp.bool_)
                 constants_gpu = cp.full(batch_size, -1, dtype=cp.int64)
 
-                # Kernel'ı çalıştır
                 threads_per_block = 256
                 blocks_per_grid = (batch_size + threads_per_block - 1) // threads_per_block
-
-                print(f"🎯 Kernel çalıştırılıyor - Blocks: {blocks_per_grid}, Threads: {threads_per_block}")
 
                 self.validate_magic_squares_kernel(
                     (blocks_per_grid,), (threads_per_block,),
                     (combinations_gpu, self.n, batch_size, n_squared, results_gpu, constants_gpu)
                 )
 
-                # Sonuçları CPU'ya kopyala
                 results = cp.asnumpy(results_gpu)
                 constants = cp.asnumpy(constants_gpu)
 
-                # Belleği temizle
                 del combinations_gpu, results_gpu, constants_gpu
-                cp.get_default_memory_pool().free_all_blocks()
+                if hasattr(cp, 'get_default_memory_pool'):
+                    cp.get_default_memory_pool().free_all_blocks()
 
-                print("✅ GPU işlemi başarıyla tamamlandı")
                 return results, constants
 
             except Exception as e:
-                # Çalışma zamanında GPU hatası olursa CPU moduna geri dön
-                print(f"❌ GPU çalışma zamanı hatası: {e}. CPU moduna geçiliyor...")
+                print(f"❌ GPU doğrulama hatası: {e}")
                 self.gpu_available = False
                 return self._validate_batch_cpu(combinations)
         else:
             return self._validate_batch_cpu(combinations)
 
     def _validate_batch_cpu(self, combinations: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """CPU'da batch doğrulama"""
-        print("🖥️ CPU modunda doğrulama yapılıyor...")
         batch_size = combinations.shape[0]
         results = np.zeros(batch_size, dtype=bool)
         constants = np.full(batch_size, -1, dtype=np.int64)
@@ -343,7 +302,6 @@ class GPUMagicSquareValidator:
         return results, constants
 
     def _validate_single_cpu(self, square: np.ndarray) -> bool:
-        """CPU'da tek kare doğrulama"""
         n = square.shape[0]
         target = np.sum(square[0])
 
@@ -360,38 +318,49 @@ class GPUMagicSquareValidator:
 
         return diag1 == target and diag2 == target
 
-class GPUCombinationGenerator:
-    """GPU dostu kombinasyon üretici"""
+# =============================================================================
+# KOMBİNASYON ÜRETİCİ
+# =============================================================================
 
+class GPUCombinationGenerator:
     def __init__(self, batch_size: int = 10000):
         self.batch_size = batch_size
 
     def generate_combination_batches(self, unique_values: np.ndarray, n_squared: int,
-                                   total_combinations: int, start_index: int = 0):
-        """GPU batch'leri için kombinasyon üret"""
+                                total_combinations: int, start_index: int = 0):
         from itertools import combinations, islice
 
-        remaining = total_combinations - start_index
+        batch_size = min(self.batch_size, 10000)
 
-        for batch_start in range(start_index, total_combinations, self.batch_size):
-            batch_end = min(batch_start + self.batch_size, total_combinations)
-            batch_size = batch_end - batch_start
+        for batch_start in range(start_index, total_combinations, batch_size):
+            batch_end = min(batch_start + batch_size, total_combinations)
+            current_batch_size = batch_end - batch_start
 
-            combo_iter = combinations(unique_values, n_squared)
+            if current_batch_size <= 0:
+                break
+
+            batch = np.zeros((current_batch_size, n_squared), dtype=np.int64)
+            combo_iter = combinations(range(len(unique_values)), n_squared)
+
             if batch_start > 0:
                 combo_iter = islice(combo_iter, batch_start, None)
 
-            batch = np.zeros((batch_size, n_squared), dtype=np.int64)
-            for i, combo in enumerate(combo_iter):
-                if i >= batch_size:
+            for i in range(current_batch_size):
+                try:
+                    indices = next(combo_iter)
+                    batch[i] = unique_values[list(indices)]
+                except StopIteration:
+                    batch = batch[:i]
                     break
-                batch[i] = list(combo)
 
-            yield batch, batch_start, batch_end
+            if len(batch) > 0:
+                yield batch, batch_start, batch_start + len(batch)
+
+# =============================================================================
+# KUTULU KARE FORMATLAMA
+# =============================================================================
 
 class BoxedSquareFormatter:
-    """Kutulu kare formatlama"""
-
     def __init__(self):
         pass
 
@@ -456,6 +425,39 @@ class BoxedSquareFormatter:
 
         return "\n".join(boxed)
 
+# =============================================================================
+# İLERLEME GÖRSELLEŞTİRME
+# =============================================================================
+
+def format_seconds_to_eta(seconds: float) -> str:
+    if seconds is None or seconds < 0 or seconds == float('inf'):
+        return "∞"
+
+    parts = []
+    total_seconds = int(seconds)
+
+    intervals = [
+        (365 * 24 * 3600, " yıl"),
+        (30 * 24 * 3600, " ay"),
+        (24 * 3600, " gün"),
+        (3600, " saat"),
+        (60, " dakika"),
+        (1, " saniye"),
+    ]
+
+    for interval_seconds, label in intervals:
+        count = total_seconds // interval_seconds
+        if count > 0 or len(parts) > 0:
+            parts.append(f"{count}{label}")
+            total_seconds %= interval_seconds
+            if len(parts) >= 3:
+                break
+
+    if not parts:
+        return "0sn"
+
+    return " ".join(parts)
+
 class ProgressVisualizer:
     def __init__(self, total_combinations: int, square_size: int):
         self.total = total_combinations
@@ -464,11 +466,15 @@ class ProgressVisualizer:
         self.found_squares = 0
         self.square_size = square_size
         self.formatter = BoxedSquareFormatter()
+        self.current_magic_map = None
 
-    def update(self, current: int, found_squares: int = None, current_square=None):
+    def update(self, current: int, found_squares: int = None, current_square=None, magic_map=None, value_combo=None):
         self.current = current
         if found_squares is not None:
             self.found_squares = found_squares
+
+        if magic_map is not None:
+            self.current_magic_map = magic_map
 
         sys.stdout.write('\033[2J\033[H')
         print("🔍 SİHİRLİ KARE ARAŞTIRMASI")
@@ -484,17 +490,11 @@ class ProgressVisualizer:
         bar = '█' * filled_length + '▒' * (bar_length - filled_length)
 
         elapsed_time = time.time() - self.start_time
+
         if self.current > 0 and elapsed_time > 0:
             items_per_second = self.current / elapsed_time
             remaining_time = (self.total - self.current) / items_per_second if items_per_second > 0 else 0
-
-            if remaining_time > 3600:
-                eta = f"{remaining_time/3600:.1f}sa"
-            elif remaining_time > 60:
-                eta = f"{remaining_time/60:.1f}dk"
-            else:
-                eta = f"{remaining_time:.1f}sn"
-
+            eta = format_seconds_to_eta(remaining_time)
             speed_info = f"│ Hız: {items_per_second:.0f} kombinasyon/sn"
         else:
             eta = "Hesaplanıyor..."
@@ -503,31 +503,62 @@ class ProgressVisualizer:
         print(f"│ Test: {self.current:,}/{self.total:,} │ Bulunan: {self.found_squares} │ Kalan: {eta} {speed_info}")
         print(f"│{bar}│ {percentage:5.1f}%")
 
-        # <<< DÜZELTME BAŞLANGICI: GPU Raporlama Mantığı >>>
-        global GPU_AVAILABLE, GPU_DEVICES, CUPY_IMPORTED
-
-        # CuPy yüklü ve CUDA testi başarılıysa, GPU modunu AKTİF göster
-        if GPU_AVAILABLE and CUPY_IMPORTED:
-            print(f"│ 🚀 GPU MODU: AKTİF (CuPy ile {len(GPU_DEVICES)} GPU)")
-        elif CUPY_IMPORTED:
-            # CuPy yüklü ama CUDA testi başarısız veya cihaz yoksa (Yine de CuPy yüklenmiş)
-            print("│ ⚠️ GPU MODU: PASİF (CuPy yüklü ancak cihaz/test hatası)")
+        global GPU_AVAILABLE, GPU_DEVICES
+        if GPU_AVAILABLE:
+            print(f"│ 🚀 GPU MODU: AKTİF ({len(GPU_DEVICES)} GPU - Yüksek Hız)")
         else:
-            # CuPy hiç yüklenemediyse
             print("│ ⚠️ GPU MODU: PASİF (NumPy/CPU)")
-        # <<< DÜZELTME SONU >>>
-
         print("═" * 60)
 
-        if current_square is not None:
-            print("🔄 Şu an test edilen değer dağılımı:")
+        # HARİTAYI GÖSTER
+        if self.current_magic_map is not None:
+            print("🗺️  KULLANILAN HARİTA (Sıralama referansı):")
             try:
-                if hasattr(current_square, 'tolist'):
-                    current_square = current_square.tolist()
-                boxed = self.formatter.box_the_square(current_square, border_style=1, cell_width=8)
-                print(boxed)
+                map_boxed = self.formatter.box_the_square(self.current_magic_map, border_style=1, cell_width=6)
+                print(map_boxed)
+
+                # Harita değerlerini sıralı göster
+                map_flat = np.array(self.current_magic_map).flatten()
+                sorted_indices = sorted(range(len(map_flat)), key=lambda i: map_flat[i])
+                sorted_values = [map_flat[i] for i in sorted_indices]
+                # print(f"📊 Harita sıralaması (küçükten büyüğe): {sorted_values}")
+
             except Exception as e:
-                print(f"⚠️ Kare gösterim hatası: {e}")
+                print(f"⚠️ Harita gösterim hatası: {e}")
+
+        # TEST EDİLEN DEĞER DAĞILIMINI GÖSTER - HARITA SIRALAMASIYLA UYUMLU
+        if current_square is not None and value_combo is not None and self.current_magic_map is not None:
+            print("\n🔄 Şu an test edilen EBCED DEĞERLERİ (Harita sıralamasına göre):")
+            try:
+                # Mevcut kombinasyonu harita sıralamasına göre düzenle
+                map_flat = np.array(self.current_magic_map).flatten()
+                sorted_positions = sorted(range(len(map_flat)), key=lambda i: map_flat[i])
+                sorted_ebced = sorted(value_combo)
+
+                # Harita sıralamasına göre kare oluştur
+                display_square = np.zeros((self.square_size, self.square_size), dtype=int)
+                for pos_idx, original_pos in enumerate(sorted_positions):
+                    if pos_idx < len(sorted_ebced):
+                        row = original_pos // self.square_size
+                        col = original_pos % self.square_size
+                        display_square[row, col] = sorted_ebced[pos_idx]
+
+                boxed = self.formatter.box_the_square(display_square.tolist(), border_style=1, cell_width=8)
+                print(boxed)
+
+                # Sıralı değerleri göster
+                # print(f"📈 Ebced değerleri (küçükten büyüğe): {sorted_ebced}")
+
+            except Exception as e:
+                print(f"⚠️ Değer gösterim hatası: {e}")
+                # Fallback: orijinal kareyi göster
+                try:
+                    if hasattr(current_square, 'tolist'):
+                        current_square = current_square.tolist()
+                    boxed = self.formatter.box_the_square(current_square, border_style=1, cell_width=8)
+                    print(boxed)
+                except:
+                    print("❌ Görselleştirme başarısız")
 
         print("═" * 60)
         sys.stdout.flush()
@@ -568,12 +599,10 @@ class ProgressVisualizer:
         print(f"\n✅ TAMAMLANDI! Toplam {self.found_squares} sihirli kare bulundu.")
 
 # =============================================================================
-# ANA ÇÖZÜCÜ
+# ANA ÇÖZÜCÜ - DÜZELTİLMİŞ
 # =============================================================================
 
 class GPUOptimizedSquareChecker:
-    """Ana sihirli kare çözücü"""
-
     def __init__(self, log_file: str = "square_checker.log", gpu_batch_size: int = 10000):
         self.abjad_calculator = Abjad()
         self.log_file = log_file
@@ -583,25 +612,16 @@ class GPUOptimizedSquareChecker:
         self.gpu_batch_size = gpu_batch_size
         self._should_save_checkpoint = True
 
-        # GPU durumunu kontrol et
-        global GPU_AVAILABLE, GPU_DEVICES
         self.gpu_available = GPU_AVAILABLE
         self.gpu_devices = GPU_DEVICES
 
-        print(f"🎯 Çözücü Başlatılıyor - GPU: {self.gpu_available}, Cihazlar: {self.gpu_devices}")
+        print(f"🎯 Çözücü Başlatılıyor - GPU: {self.gpu_available}")
 
         if self.gpu_available:
             self.log(f"🚀 GPU modu ETKİN - {len(self.gpu_devices)} GPU kullanılıyor")
-            for device_id in self.gpu_devices:
-                try:
-                    device_name = cp.cuda.runtime.getDeviceProperties(device_id)['name'].decode('utf-8')
-                    self.log(f"   📍 GPU {device_id}: {device_name}")
-                except:
-                    self.log(f"   📍 GPU {device_id}: Aktif (Bilgi alınamadı)")
         else:
             self.log("⚠️ GPU modu PASİF, CPU kullanılıyor")
 
-        # MagicSquareGenerator'ı başlat
         if MAGIC_SQUARE_AVAILABLE:
             self.magic_generator = MagicSquareGenerator()
             print("✅ MagicSquareGenerator başlatıldı")
@@ -611,8 +631,6 @@ class GPUOptimizedSquareChecker:
 
         self._setup_logging()
         self._setup_signal_handlers()
-
-    # ... (Diğer metodlar aynı kalacaktır)
 
     def _setup_signal_handlers(self):
         def signal_handler(sig, frame):
@@ -666,7 +684,6 @@ class GPUOptimizedSquareChecker:
             self.log(f"Checkpoint temizlendi: {checkpoint_path}")
 
     def validate_language_tables(self, language: str, tables: List[int]) -> Tuple[bool, List[int]]:
-        """Dil ve tablo kombinasyonunu doğrula"""
         if language not in SUPPORTED_LANGUAGES:
             return False, []
 
@@ -681,7 +698,6 @@ class GPUOptimizedSquareChecker:
         return True, valid_tables
 
     def abjad(self, text: str, table_code: int = 1, shadda: int = 1, lang: str = "arabic") -> int:
-        """Ebced değeri hesapla"""
         try:
             result = self.abjad_calculator.abjad(text, table_code, shadda, 0, lang)
             if isinstance(result, dict):
@@ -692,7 +708,6 @@ class GPUOptimizedSquareChecker:
             return 0
 
     def generate_unique_magic_square_maps(self, size: int, count: int = 5) -> List[np.ndarray]:
-        """FARKLI sihirli kare haritaları üret"""
         if not MAGIC_SQUARE_AVAILABLE:
             self.log("❌ MagicSquareGenerator kullanılamıyor!", "ERROR")
             return []
@@ -709,7 +724,6 @@ class GPUOptimizedSquareChecker:
             return []
 
     def _filter_unique_squares(self, squares: List[np.ndarray]) -> List[np.ndarray]:
-        """Benzersiz kareleri bul"""
         unique_squares = []
         seen_patterns = set()
 
@@ -724,7 +738,6 @@ class GPUOptimizedSquareChecker:
         return unique_squares
 
     def _get_canonical_form(self, square: np.ndarray) -> np.ndarray:
-        """Karenin kanonik formunu bul"""
         n = square.shape[0]
         variations = []
 
@@ -743,7 +756,6 @@ class GPUOptimizedSquareChecker:
         return min_variation
 
     def parse_input_file(self, file_path: str) -> Dict[str, Any]:
-        """Girdi dosyasını oku"""
         self.log(f"Girdi dosyası okunuyor: {file_path}")
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
@@ -757,7 +769,6 @@ class GPUOptimizedSquareChecker:
         return {'phrases': phrases}
 
     def calculate_ebced_values(self, phrases: List[str], table_codes: List[int], shadda: int = 1, lang: str = "arabic") -> List[EbcedResult]:
-        """İfadelerin ebced değerlerini hesapla"""
         results = []
         for phrase in phrases:
             for table_code in table_codes:
@@ -765,34 +776,73 @@ class GPUOptimizedSquareChecker:
                 results.append(EbcedResult(phrase, value, table_code, lang))
         return results
 
+    def _get_current_square_for_display(self, value_combo: np.ndarray, magic_square_map: np.ndarray, n: int):
+        """Görselleştirme için HARITA SIRALAMASIYLA UYUMLU kare oluştur"""
+
+        # Aynı mantıkla harita sıralamasına göre yerleştirme
+        map_flat = magic_square_map.flatten()
+        sorted_positions = sorted(range(len(map_flat)), key=lambda i: map_flat[i])
+        sorted_ebced = sorted(value_combo)
+
+        position_to_value = {}
+        for pos_idx, original_pos in enumerate(sorted_positions):
+            if pos_idx < len(sorted_ebced):
+                position_to_value[original_pos] = sorted_ebced[pos_idx]
+
+        # Görselleştirme karesi oluştur
+        display_square = np.zeros((n, n), dtype=int)
+
+        for original_idx, ebced_value in position_to_value.items():
+            row = original_idx // n
+            col = original_idx % n
+            display_square[row, col] = ebced_value
+
+        return display_square.tolist()
+
     def create_magic_square_solution(self, value_combo: np.ndarray, value_groups: Dict[int, List[str]],
                                    magic_square_map: np.ndarray, table_code: int, language: str,
                                    combination_index: int, n: int, input_file: str) -> MagicSquareSolution:
-        """Sihirli kare çözümü oluştur"""
+        """Sihirli kare çözümü oluştur - HARITA SIRALAMASIYLA UYUMLU"""
 
+        # 1. Haritayı düzleştir ve sırala
         map_flat = magic_square_map.flatten()
+
+        # 2. DOĞRU SIRALAMA: Harita pozisyonlarını DEĞERLERİNE göre sırala
         sorted_positions = sorted(range(len(map_flat)), key=lambda i: map_flat[i])
 
+        # 3. Ebced değerlerini küçükten büyüğe sırala
+        sorted_ebced = sorted(value_combo)
+
+        # 4. DOĞRU EŞLEME: En küçük harita değeri -> en küçük ebced değeri
+        position_to_value = {}
+        for pos_idx, original_pos in enumerate(sorted_positions):
+            if pos_idx < len(sorted_ebced):
+                position_to_value[original_pos] = sorted_ebced[pos_idx]
+
+        # 5. Kareleri oluştur - HARITA SIRALAMASINA GÖRE
         values_square = np.zeros((n, n), dtype=int)
         phrases_square = np.empty((n, n), dtype=object)
         alternative_phrases = {}
 
+        # Değer gruplarının kopyasını al
         remaining_groups = {k: v.copy() for k, v in value_groups.items()}
 
-        for idx, pos_idx in enumerate(sorted_positions):
-            if idx < len(value_combo):
-                row = pos_idx // n
-                col = pos_idx % n
-                value = value_combo[idx]
+        # 6. ORİJİNAL HARITA POZİSYONLARINA değerleri yerleştir
+        for original_idx, ebced_value in position_to_value.items():
+            row = original_idx // n
+            col = original_idx % n
 
-                if value in remaining_groups and remaining_groups[value]:
-                    main_phrase = remaining_groups[value].pop(0)
-                    values_square[row, col] = value
-                    phrases_square[row, col] = main_phrase
+            if ebced_value in remaining_groups and remaining_groups[ebced_value]:
+                main_phrase = remaining_groups[ebced_value].pop(0)
+                values_square[row, col] = ebced_value
+                phrases_square[row, col] = main_phrase
 
-                    if len(remaining_groups[value]) > 0:
-                        alt_key = f"{row}_{col}"
-                        alternative_phrases[alt_key] = remaining_groups[value].copy()
+                # Alternatif ifadeleri kaydet
+                if len(remaining_groups[ebced_value]) > 0:
+                    alt_key = f"{row}_{col}"
+                    alternative_phrases[alt_key] = remaining_groups[ebced_value].copy()
+
+        magic_constant = int(np.sum(values_square[0]))
 
         self.solution_counter += 1
 
@@ -800,7 +850,7 @@ class GPUOptimizedSquareChecker:
             search_id=self.solution_counter,
             table_code=table_code,
             language=language,
-            magic_constant=int(np.sum(values_square[0])),
+            magic_constant=magic_constant,
             combination_index=combination_index,
             square_values=values_square.tolist(),
             square_phrases=phrases_square.tolist(),
@@ -811,7 +861,6 @@ class GPUOptimizedSquareChecker:
         )
 
     def save_solution_to_file(self, solution: MagicSquareSolution, output_dir: str):
-        """Çözümü dosyaya kaydet"""
         timestamp = datetime.now().strftime('%d-%m-%Y_%H-%M')
         filename = f"solution_{solution.search_id:03d}.txt"
         filepath = os.path.join(output_dir, filename)
@@ -825,7 +874,6 @@ class GPUOptimizedSquareChecker:
             f.write(f"📐 Sihirli Sabit: {solution.magic_constant}\n")
             f.write(f"🔢 Kombinasyon No: {solution.combination_index}\n")
 
-            # GPU raporlaması global değişkenleri kullanır
             global GPU_AVAILABLE, GPU_DEVICES
             f.write(f"⚡ GPU: {'EVET' if GPU_AVAILABLE else 'HAYIR'}\n")
             if GPU_AVAILABLE:
@@ -870,7 +918,7 @@ class GPUOptimizedSquareChecker:
                           square_size: int = 3, shadda: int = 1, max_combinations: int = 100000,
                           output_dir: str = None, resume: bool = True, language: str = "arabic",
                           map_count: int = 5):
-        """Ana çözüm fonksiyonu"""
+        """Ana çözüm fonksiyonu - DÜZELTİLMİŞ"""
 
         if not MAGIC_SQUARE_AVAILABLE:
             self.log("❌ MagicSquareGenerator gerekli!", "ERROR")
@@ -900,10 +948,7 @@ class GPUOptimizedSquareChecker:
             self.log(f"🔍 SİHİRLİ KARE ARAŞTIRMASI BAŞLATILDI")
             self.log(f"📐 Kare Boyutu: {n}x{n} | 📝 İfadeler: {len(phrases)} | 🌍 Dil: {language}")
             self.log(f"📊 Tablolar: {table_codes} | 🗺️  Harita Sayısı: {map_count}")
-
-            # Global GPU durumunu kullan
-            global GPU_AVAILABLE
-            self.log(f"🎯 GPU Durumu: {'AKTİF' if GPU_AVAILABLE else 'PASİF'}")
+            self.log(f"🎯 GPU Durumu: {'AKTİF' if self.gpu_available else 'PASİF'}")
 
             magic_square_maps = self.generate_unique_magic_square_maps(n, map_count)
             if not magic_square_maps:
@@ -913,18 +958,16 @@ class GPUOptimizedSquareChecker:
             ebced_results = self.calculate_ebced_values(phrases, table_codes, shadda, language)
             all_solutions = []
 
-            # GPU validator'ı başlat
+            # GPU VALIDATOR VE COMBO GENERATOR TANIMLAMA - DÜZELTME BURADA
             try:
                 gpu_validator = GPUMagicSquareValidator(n, self.gpu_batch_size)
-                combo_generator = GPUCombinationGenerator(self.gpu_batch_size)
+                combo_generator = GPUCombinationGenerator(self.gpu_batch_size)  # ✅ TANIMLANDI
                 self.log(f"✅ GPU validator başlatıldı - Durum: {'AKTİF' if gpu_validator.gpu_available else 'PASİF'}")
             except Exception as e:
                 self.log(f"❌ GPU validator başlatma hatası: {e}, CPU moduna geçiliyor", "WARNING")
-                # Hata durumunda bile validator'ı CPU modunda başlat
                 gpu_validator = GPUMagicSquareValidator(n, self.gpu_batch_size)
-                gpu_validator.gpu_available = False # Yerel olarak CPU moduna geç
-                combo_generator = GPUCombinationGenerator(self.gpu_batch_size)
-
+                gpu_validator.gpu_available = False
+                combo_generator = GPUCombinationGenerator(self.gpu_batch_size)  # ✅ TANIMLANDI
 
             for map_index, magic_square_map in enumerate(magic_square_maps):
                 self.log(f"🗺️  Benzersiz Harita #{map_index+1} işleniyor...")
@@ -950,7 +993,9 @@ class GPUOptimizedSquareChecker:
                         continue
 
                     total_combinations = math.comb(len(unique_values), n_squared)
-                    self.log(f"📈 Toplam kombinasyon: {total_combinations:,}")
+                    #if max_combinations and total_combinations > max_combinations:
+                    #    total_combinations = max_combinations
+                    #self.log(f"📈 Toplam kombinasyon: {total_combinations:,}")
 
                     checkpoint = None
                     start_index = 0
@@ -960,7 +1005,7 @@ class GPUOptimizedSquareChecker:
                         checkpoint = self.load_checkpoint(output_dir)
                         if (checkpoint and checkpoint.current_table_code == table_code and
                             checkpoint.current_language == language and
-                            np.array_equal(checkpoint.magic_square_map, magic_square_map.flatten().tolist())): # numpy array yerine list ile karşılaştır
+                            np.array_equal(checkpoint.magic_square_map, magic_square_map.flatten().tolist())):
                             start_index = checkpoint.current_batch_index
                             found_solutions = checkpoint.found_solutions
                             self.log(f"🔄 Checkpoint'ten devam: {start_index:,}. batch")
@@ -969,21 +1014,33 @@ class GPUOptimizedSquareChecker:
                     found_count = len(found_solutions)
                     processed_count = start_index * self.gpu_batch_size
 
+                    # ✅ COMBO_GENERATOR ARTIK TANIMLI - HATA DÜZELDİ
                     for batch, batch_start, batch_end in combo_generator.generate_combination_batches(
                         unique_array, n_squared, total_combinations, start_index):
 
                         batch_size = batch.shape[0]
+                        gpu_time = 0
 
                         # GPU DOĞRULAMA
                         start_gpu_time = time.time()
-
-                        # Eğer validator yerel olarak CPU'ya düşürüldüyse, validate_batch_gpu da CPU'da çalışır
                         valid_mask, magic_constants = gpu_validator.validate_batch_gpu(batch)
-
                         gpu_time = time.time() - start_gpu_time
 
                         valid_indices = np.where(valid_mask)[0]
 
+                        # HARITA SIRALAMASIYLA UYUMLU GÖRSELLEŞTİRME
+                        current_square_display = None
+                        current_value_combo = None
+                        if batch_size > 0:
+                            # İlk kombinasyonu al ve harita sıralamasına göre düzenle
+                            current_value_combo = batch[0]
+                            current_square_display = self._get_current_square_for_display(current_value_combo, magic_square_map, n)
+
+                        # Güncelle - value_combo parametresini ekle
+                        visual.update(processed_count, found_count, current_square_display,
+                                     magic_square_map.tolist(), current_value_combo)
+
+                        # GEÇERLİ ÇÖZÜMLERİ İŞLE
                         for idx in valid_indices:
                             combo_index = batch_start + idx
                             value_combo = batch[idx]
@@ -1005,20 +1062,20 @@ class GPUOptimizedSquareChecker:
                         processed_count += batch_size
                         items_per_second = batch_size / gpu_time if gpu_time > 0 else 0
 
+                        # Sonraki iterasyon için görselleştirme
                         current_square_display = None
+                        current_value_combo = None
                         if batch_size > 0:
-                            current_square_display = batch[0].reshape(n, n)
-                            if hasattr(current_square_display, 'tolist'):
-                                current_square_display = current_square_display.tolist()
+                            current_value_combo = batch[0]
+                            current_square_display = self._get_current_square_for_display(current_value_combo, magic_square_map, n)
 
-                        visual.update(processed_count, found_count, current_square_display)
+                        visual.update(processed_count, found_count, current_square_display,
+                                     magic_square_map.tolist(), current_value_combo)
 
-                        if gpu_time > 0 and gpu_validator.gpu_available:
-                            self.log(f"⚡ Batch: {batch_size} combo, {gpu_time:.3f}s, {items_per_second:.0f} combo/sn (GPU)")
-                        elif gpu_time > 0:
-                            self.log(f"🖥️ Batch: {batch_size} combo, {gpu_time:.3f}s, {items_per_second:.0f} combo/sn (CPU)")
+                        if gpu_time > 0:
+                            self.log(f"⚡ Batch: {batch_size} combo, {gpu_time:.3f}s, {items_per_second:.0f} combo/sn")
 
-
+                        # CHECKPOINT KAYDET
                         checkpoint = Checkpoint(
                             processed_combinations=processed_count,
                             current_table_code=table_code,
@@ -1041,13 +1098,20 @@ class GPUOptimizedSquareChecker:
             execution_time = time.time() - start_time
             self.log(f"✅ TAMAMLANDI: {len(all_solutions)} sihirli kare bulundu")
             self.log(f"⏱️ Toplam süre: {execution_time:.2f}s")
-            self.log(f"📊 Ortalama hız: {processed_count/execution_time:.0f} kombinasyon/sn")
+            if execution_time > 0:
+                self.log(f"📊 Ortalama hız: {processed_count/execution_time:.0f} kombinasyon/sn")
 
             return all_solutions
 
         except Exception as e:
             self.log(f"❌ Çözüm hatası: {str(e)}", "ERROR")
+            import traceback
+            self.log(f"❌ Traceback: {traceback.format_exc()}", "ERROR")
             raise
+
+# =============================================================================
+# ANA FONKSİYON
+# =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description='Sihirli Kare Çözücü - MagicSquareGenerator ile harita üretip ebced değerlerini yerleştirir')
@@ -1060,7 +1124,7 @@ def main():
                        help='Şedde hesabı (Arapça için)')
     parser.add_argument('--limit', '-l', type=int, default=100000,
                        help='Maksimum test kombinasyonu')
-    parser.add_argument('--batch-size', '-b', type=int, default=10000,
+    parser.add_argument('--batch-size', '-b', type=int, default=80000,
                        help='GPU batch boyutu')
     parser.add_argument('--lang', '-L', default='arabic',
                        choices=['arabic', 'hebrew', 'turkish', 'english', 'latin'],
@@ -1089,7 +1153,7 @@ def main():
         if args.lang in SUPPORTED_LANGUAGES:
              args.tables = [SUPPORTED_LANGUAGES[args.lang]["default_table"]]
         else:
-             args.tables = [1] # Varsayılan tablo
+             args.tables = [1]
 
     print("🚀 SİHİRLİ KARE ÇÖZÜCÜ")
     print("═" * 60)
@@ -1100,19 +1164,16 @@ def main():
     print(f"📐 Boyut: {args.size}x{args.size}")
     print(f"🌍 Dil: {args.lang}")
     print(f"📊 Tablolar: {args.tables}")
+    print(f"🔤 Şedde: {args.shadda}")
     print(f"🗺️  Harita Sayısı: {args.map_count}")
     print(f"⏱️ Limit: {args.limit:,} kombinasyon")
     print(f"🎯 Batch: {args.batch_size}")
 
-    # Global GPU durumunu kullan
-    global GPU_AVAILABLE, GPU_DEVICES, CUPY_IMPORTED
-    if GPU_AVAILABLE and CUPY_IMPORTED:
+    global GPU_AVAILABLE, GPU_DEVICES
+    if GPU_AVAILABLE:
         print(f"🚀 GPU MODU: AKTİF ({len(GPU_DEVICES)} GPU)")
-    elif CUPY_IMPORTED:
-        print("⚠️ GPU MODU: PASİF (CuPy yüklü ancak cihaz/test hatası - CPU)")
     else:
         print("⚠️ GPU MODU: PASİF (CPU)")
-
     print("═" * 60)
 
     checker = GPUOptimizedSquareChecker(gpu_batch_size=args.batch_size)
