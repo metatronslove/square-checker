@@ -658,6 +658,14 @@ pip list | grep -E "(numpy|cupy|tqdm)"
 nvidia-smi  # GPU varsa
 ```
 
+## ☕ Destek Olun / Support
+
+Projemi beğendiyseniz, bana bir kahve ısmarlayarak destek olabilirsiniz!
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/metatronslove)
+
+Teşekkürler! 🙏
+
 ---
 
 **Not**: GPU desteği opsiyonel olup yüksek performans sağlar. CPU modu da tüm temel özelliklerle çalışır.
